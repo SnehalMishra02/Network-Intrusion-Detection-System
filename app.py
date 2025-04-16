@@ -9,8 +9,10 @@ from xgboost import XGBClassifier
 from river import compose, preprocessing, linear_model, metrics, drift
 from river import tree, ensemble, neighbors, naive_bayes
 
+# App Configuration
 st.set_page_config(page_title="Network Intrusion Detection", layout="wide")
 
+# Paths to Model Artifacts
 MODEL_PATH = "./model/xgb_model.pkl"
 SCALER_PATH = "./model/scaler.pkl"
 SELECTOR_PATH = "./model/selector.pkl"
@@ -18,6 +20,7 @@ REFERENCE_SAMPLE_PATH = "./reference_sample.csv"
 LABEL_MAPPING_PATH = "./model/label_mapping.pkl"
 ONLINE_MODEL_PATH = "./model/online_model.pkl"
 
+# Load Artifacts
 @st.cache_resource
 def load_artifacts():
     try:
@@ -25,32 +28,23 @@ def load_artifacts():
         scaler = joblib.load(SCALER_PATH)
         selector = joblib.load(SELECTOR_PATH)
         reference = pd.read_csv(REFERENCE_SAMPLE_PATH)
-        if os.path.exists(LABEL_MAPPING_PATH):
-            label_mapping = joblib.load(LABEL_MAPPING_PATH)
-        else:
-            label_mapping = None
-
-        if os.path.exists(ONLINE_MODEL_PATH):
-            online_model = joblib.load(ONLINE_MODEL_PATH)
-        else:
-            online_model = compose.Pipeline(
-                preprocessing.StandardScaler(),
-                tree.HoeffdingTreeClassifier()
-            )
+        label_mapping = joblib.load(LABEL_MAPPING_PATH) if os.path.exists(LABEL_MAPPING_PATH) else None
+        online_model = joblib.load(ONLINE_MODEL_PATH) if os.path.exists(ONLINE_MODEL_PATH) else compose.Pipeline(
+            preprocessing.StandardScaler(),
+            tree.HoeffdingTreeClassifier()
+        )
         return model, scaler, selector, reference, label_mapping, online_model
     except Exception as e:
         st.error(f"Error loading artifacts: {e}")
         return None, None, None, None, None, None
 
+# Initialize Models and Metrics
 model, scaler, selector, reference_df, label_mapping, online_model = load_artifacts()
-
 online_metrics = metrics.ClassificationReport()
 drift_detector = drift.ADWIN()
+inverse_map = {v: k for k, v in label_mapping.items()} if label_mapping else None
 
-inverse_map = None
-if label_mapping:
-    inverse_map = {v: k for k, v in label_mapping.items()}
-
+# Drift Detection Function
 def detect_drift(reference_data, incoming_data, feature_names, threshold=0.05):
     drifted_features = []
     for col in feature_names:
@@ -60,25 +54,29 @@ def detect_drift(reference_data, incoming_data, feature_names, threshold=0.05):
                 drifted_features.append((col, p))
     return drifted_features
 
+# Prepare Data for Online Learning
 def prepare_river_sample(row, feature_names, target_col=None):
     features = {col: row[col] for col in feature_names}
     if target_col and target_col in row:
         return features, row[target_col]
     return features
 
+# App Title and Description
 st.title("Network Intrusion Detection System")
 st.markdown("""
 Upload a CSV file of network traffic to classify entries, detect data drift, and evaluate model performance.
 This system uses a batch-trained XGBoost model and supports online learning with Hoeffding Tree.
 """)
 
+# File Upload and Input
 uploaded_file = st.file_uploader("Upload Network Traffic CSV", type=["csv"])
 ground_truth_col = st.text_input("Enter the ground truth column name (if available):")
-
 online_learning_toggle = st.checkbox("Enable Online Learning", value=True)
 
+# Main Processing Section
 if uploaded_file and model and scaler and selector and reference_df is not None:
     try:
+        # Load and Display Uploaded Data
         df = pd.read_csv(uploaded_file)
         st.subheader("1. Uploaded Data Sample")
         st.dataframe(df.head())
@@ -87,6 +85,7 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             st.error(f"Ground truth column '{ground_truth_col}' not found.")
             st.stop()
 
+        # Preprocess Data
         numeric_df = df.apply(pd.to_numeric, errors='coerce')
         numeric_df.replace([np.inf, -np.inf], np.nan, inplace=True)
         numeric_df.fillna(numeric_df.mean(numeric_only=True), inplace=True)
@@ -96,7 +95,6 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
         common_cols = list(set(reference_df.columns).intersection(numeric_df.columns))
         reference_clean = reference_df[common_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
         incoming_clean = numeric_df[common_cols].copy()
-
         drifted = detect_drift(reference_clean, incoming_clean, common_cols)
 
         if drifted:
@@ -112,6 +110,7 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
         scaled = scaler.transform(selected_df)
         batch_predictions = model.predict(scaled)
 
+        # Online Learning and Predictions
         online_predictions = []
         batch_correct = 0
         online_correct = 0
@@ -131,13 +130,7 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
                 has_ground_truth = False
 
             online_pred = online_model.predict_one(x)
-
-            # Convert online prediction (string label) to numerical using label_mapping
-            if label_mapping and online_pred in label_mapping:
-                online_pred_numeric = label_mapping[online_pred]
-            else:
-                online_pred_numeric = -1  # Unknown label
-
+            online_pred_numeric = label_mapping[online_pred] if label_mapping and online_pred in label_mapping else -1
             online_predictions.append(online_pred_numeric)
 
             if has_ground_truth:
@@ -157,6 +150,7 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
 
         joblib.dump(online_model, ONLINE_MODEL_PATH)
 
+        # Display Results
         df_result = df.copy()
         df_result['Batch_Prediction'] = batch_predictions
         df_result['Online_Prediction'] = online_predictions
@@ -168,14 +162,10 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
         st.subheader("3. Prediction Results")
         st.dataframe(df_result.head(10))
 
-        # Evaluation
+        # Model Performance Evaluation
         if ground_truth_col and ground_truth_col in df.columns:
-            true_labels = df[ground_truth_col]
-
-            # Ensure both true_labels and batch_predictions are numeric
-            true_labels = pd.to_numeric(true_labels, errors='coerce')
+            true_labels = pd.to_numeric(df[ground_truth_col], errors='coerce')
             batch_predictions = pd.Series(batch_predictions).astype(int)
-
 
             st.subheader("4. Model Performance")
             col1, col2, col3 = st.columns(3)
@@ -193,10 +183,8 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
                 hybrid_correct = sum((batch_predictions == true_labels) | (online_predictions == true_labels))
                 hybrid_acc = hybrid_correct / len(true_labels)
                 st.metric("Hybrid Model Accuracy", f"{hybrid_acc * 100:.2f}%")
-                st.write("Batch Predictions:", batch_predictions[:10])
-                st.write("Online Predictions:", online_predictions[:10])
 
-
+        # Download Results
         st.subheader("5. Download Results")
         csv = df_result.to_csv(index=False).encode("utf-8")
         st.download_button("Download Prediction CSV", csv, file_name="predictions.csv", mime="text/csv")
@@ -207,10 +195,10 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
 elif uploaded_file:
     st.warning("Model and support files were not loaded correctly. Please check their presence.")
 
-# Sidebar
+# Sidebar Section
 if online_model:
     st.sidebar.subheader("Online Learning Status")
-    st.sidebar.write(f"Online model type: {type(online_model).__name__}")  # Fixed here
+    st.sidebar.write(f"Online model type: {type(online_model).__name__}")
     st.sidebar.write(f"Online metrics: {online_metrics}")
 
     if drift_detector.drift_detected:
