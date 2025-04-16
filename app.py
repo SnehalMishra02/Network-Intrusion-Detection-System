@@ -5,12 +5,11 @@ import joblib
 import os
 from scipy.stats import ks_2samp
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 from river import compose, preprocessing, linear_model, metrics, drift
 from river import tree, ensemble, neighbors, naive_bayes
 
-st.set_page_config(page_title="Hybrid Network Intrusion Detection", layout="wide")
+st.set_page_config(page_title="Network Intrusion Detection", layout="wide")
 
 MODEL_PATH = "./model/xgb_model.pkl"
 SCALER_PATH = "./model/scaler.pkl"
@@ -31,7 +30,6 @@ def load_artifacts():
         else:
             label_mapping = None
 
-        # Initialize online model
         if os.path.exists(ONLINE_MODEL_PATH):
             online_model = joblib.load(ONLINE_MODEL_PATH)
         else:
@@ -68,17 +66,16 @@ def prepare_river_sample(row, feature_names, target_col=None):
         return features, row[target_col]
     return features
 
-st.title("Hybrid Network Intrusion Detection System")
+st.title("Network Intrusion Detection System")
 st.markdown("""
-This system combines batch XGBoost with online learning for continuous adaptation.
 Upload a CSV file of network traffic to classify entries, detect data drift, and evaluate model performance.
+This system uses a batch-trained XGBoost model and supports online learning with Hoeffding Tree.
 """)
 
 uploaded_file = st.file_uploader("Upload Network Traffic CSV", type=["csv"])
 ground_truth_col = st.text_input("Enter the ground truth column name (if available):")
 
 online_learning_toggle = st.checkbox("Enable Online Learning", value=True)
-hybrid_mode = st.checkbox("Enable Hybrid Mode (Combine batch and online predictions)", value=True)
 
 if uploaded_file and model and scaler and selector and reference_df is not None:
     try:
@@ -90,7 +87,6 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             st.error(f"Ground truth column '{ground_truth_col}' not found.")
             st.stop()
 
-        # Preprocess data
         numeric_df = df.apply(pd.to_numeric, errors='coerce')
         numeric_df.replace([np.inf, -np.inf], np.nan, inplace=True)
         numeric_df.fillna(numeric_df.mean(numeric_only=True), inplace=True)
@@ -117,14 +113,10 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
         batch_predictions = model.predict(scaled)
 
         online_predictions = []
-        hybrid_predictions = []
-
         batch_correct = 0
         online_correct = 0
-        hybrid_correct = 0
         total_samples = 0
 
-        # Process each row for online learning and hybrid predictions
         for idx, row in df.iterrows():
             river_sample = prepare_river_sample(row, feature_names, ground_truth_col if ground_truth_col else None)
 
@@ -139,49 +131,44 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
                 has_ground_truth = False
 
             online_pred = online_model.predict_one(x)
+
+            # Convert online prediction (string label) to numerical using label_mapping
+            if label_mapping and online_pred in label_mapping:
+                online_pred_numeric = label_mapping[online_pred]
+            else:
+                online_pred_numeric = -1  # Unknown label
+
+            online_predictions.append(online_pred_numeric)
+
             if has_ground_truth:
                 drift_detector.update(int(online_pred != y))
                 if drift_detector.drift_detected:
                     st.warning("Concept drift detected in online model!")
 
-            hybrid_pred = online_pred if np.random.rand() > 0.5 else batch_predictions[idx]
-            online_predictions.append(online_pred)
-            hybrid_predictions.append(hybrid_pred)
-
             if online_learning_toggle and has_ground_truth:
                 online_model.learn_one(x, y)
                 if y is not None and online_pred is not None:
                     online_metrics.update(y, online_pred)
-                if batch_predictions[idx] == y:
+                if batch_predictions[idx] == label_mapping.get(y, -1):
                     batch_correct += 1
                 if online_pred == y:
                     online_correct += 1
-                if hybrid_pred == y:
-                    hybrid_correct += 1
                 total_samples += 1
 
-        # Save the updated online model
         joblib.dump(online_model, ONLINE_MODEL_PATH)
 
-        # Prepare results
         df_result = df.copy()
         df_result['Batch_Prediction'] = batch_predictions
         df_result['Online_Prediction'] = online_predictions
 
-        if hybrid_mode:
-            df_result['Final_Prediction'] = hybrid_predictions
-        else:
-            df_result['Final_Prediction'] = df_result['Online_Prediction'] if online_learning_toggle else df_result['Batch_Prediction']
-
-        if label_mapping:
-            df_result['Batch_Label'] = df_result['Batch_Prediction'].map(label_mapping)
-            df_result['Online_Label'] = df_result['Online_Prediction'].map(label_mapping)
-            df_result['Final_Label'] = df_result['Final_Prediction'].map(label_mapping)
+        if inverse_map:
+            df_result['Batch_Label'] = df_result['Batch_Prediction'].map(inverse_map)
+            df_result['Online_Label'] = df_result['Online_Prediction'].map(inverse_map)
 
         st.subheader("3. Prediction Results")
         st.dataframe(df_result.head(10))
 
-        # Evaluate model performance
+        # Evaluation
         if ground_truth_col and ground_truth_col in df.columns:
             true_labels = df[ground_truth_col]
 
@@ -189,31 +176,30 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             true_labels = pd.to_numeric(true_labels, errors='coerce')
             batch_predictions = pd.Series(batch_predictions).astype(int)
 
+
             st.subheader("4. Model Performance")
             col1, col2, col3 = st.columns(3)
 
+            batch_acc = accuracy_score(true_labels, batch_predictions)
+            online_acc = (online_correct / total_samples) if total_samples > 0 else 0
+
             with col1:
-                batch_acc = accuracy_score(true_labels, batch_predictions)
                 st.metric("Batch Model Accuracy", f"{batch_acc * 100:.2f}%")
 
             with col2:
-                if total_samples > 0:
-                    online_acc = online_correct / total_samples
-                    st.metric("Online Model Accuracy", f"{online_acc * 100:.2f}%")
-                else:
-                    st.warning("No samples processed for online model accuracy.")
+                st.metric("Online Model Accuracy", f"{online_acc * 100:.2f}%")
 
             with col3:
-                if total_samples > 0:
-                    hybrid_acc = hybrid_correct / total_samples
-                    st.metric("Hybrid Model Accuracy", f"{hybrid_acc * 100:.2f}%")
-                else:
-                    st.warning("No samples processed for hybrid model accuracy.")
+                hybrid_correct = sum((batch_predictions == true_labels) | (online_predictions == true_labels))
+                hybrid_acc = hybrid_correct / len(true_labels)
+                st.metric("Hybrid Model Accuracy", f"{hybrid_acc * 100:.2f}%")
+                st.write("Batch Predictions:", batch_predictions[:10])
+                st.write("Online Predictions:", online_predictions[:10])
 
-        # Download results
+
         st.subheader("5. Download Results")
         csv = df_result.to_csv(index=False).encode("utf-8")
-        st.download_button("Download Full Prediction CSV", csv, file_name="predictions.csv", mime="text/csv")
+        st.download_button("Download Prediction CSV", csv, file_name="predictions.csv", mime="text/csv")
 
     except Exception as e:
         st.error(f"Error during processing: {str(e)}")
@@ -224,7 +210,7 @@ elif uploaded_file:
 # Sidebar
 if online_model:
     st.sidebar.subheader("Online Learning Status")
-    st.sidebar.write(f"Online model type: {type(online_model).__name__}")
+    st.sidebar.write(f"Online model type: {type(online_model).__name__}")  # Fixed here
     st.sidebar.write(f"Online metrics: {online_metrics}")
 
     if drift_detector.drift_detected:
