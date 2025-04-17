@@ -47,16 +47,18 @@ The application allows users to:
 5. Open the application in your browser at 
 http://localhost:8501.
 
-Project Contributors
+##Project Contributors
 This project was completed as part of the Network Information and Security course (Course ID: BITE401L) during the Winter Semester 2024-25 at Vellore Institute of Technology.
 
-Team Members:
+##Team Members:
 Snehal Mishra (22BIT0325)
 Priyanshi Saraf (22BIT0649)
-Project Guide:
+
+##Project Guide:
 Dr. Aswani Kumar Cherukuri
-Acknowledgments
+
+##Acknowledgments
 We would like to express our gratitude to Dr. Aswani Kumar Cherukuri for his guidance and support throughout the project. This project was a valuable learning experience and helped us gain practical insights into network intrusion detection and machine learning.
 
-License
+##License
 This project is for educational purposes and is not intended for commercial use.
