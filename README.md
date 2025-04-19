@@ -50,11 +50,11 @@ http://localhost:8501.
 ## Project Contributors
 This project was completed as part of the Network Information and Security course (Course ID: BITE401L) during the Winter Semester 2024-25 at Vellore Institute of Technology.
 
-## Team Members:
+**Team Members:**
 Snehal Mishra (22BIT0325)
 Priyanshi Saraf (22BIT0649)
 
-## Project Guide:
+**Project Guide:**
 Dr. Aswani Kumar Cherukuri
 
 ## Acknowledgments
