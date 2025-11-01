@@ -2,6 +2,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import subprocess  # <-- Added
+import sys         # <-- Added
 import joblib
 import os
 from scipy.stats import ks_2samp
@@ -9,6 +11,11 @@ from sklearn.metrics import accuracy_score
 from xgboost import XGBClassifier
 from river import compose, preprocessing, linear_model, metrics, drift
 from river import tree, ensemble, neighbors, naive_bayes
+
+# NEW: Imports for subprocess
+import subprocess
+import sys
+import time
 
 # NEW: Deep model predictor
 from model_dl.predict_nn import NNPredictor
@@ -122,9 +129,84 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
         drifted = detect_drift(reference_clean, incoming_clean, common_cols)
 
         if drifted:
-            st.warning(f"Drift detected in {len(drifted)} feature(s):")
+            st.warning(f"Drift detected in {len(drifted)} feature(s)! Triggering automated response.")
+            
+            # --- START: NEW AUTOMATION LOGIC ---
+            st.subheader("Automated MLOps Pipeline: Drift Response")
+
+            # --- 1. Save Drifted Data ---
+            st.write("Step 1: Saving drifted data for analysis...")
+            try:
+                drifted_path = os.path.abspath("uploaded_drifted.csv")  # dynamically named file
+                numeric_df.to_csv(drifted_path, index=False)
+                st.write(f"Saved drifted data to '{drifted_path}'")
+            except Exception as e:
+                st.error(f"Failed to save drifted data file: {e}")
+                st.stop()
+
+            # --- 2. Run Synthetic Data Factory ---
+            st.write("Step 2: Running Synthetic Data Factory (Stage 1)...")
+            process_1_placeholder = st.empty()
+            with st.spinner("Generating new synthetic data... This may take a moment."):
+                try:
+                    # Use subprocess to call the external script
+                    process_data = subprocess.run(
+                        [sys.executable, "synthetic_data_factory.py", drifted_path], 
+                        capture_output=True, text=True, check=True, timeout=120
+                    )
+                    process_1_placeholder.text(process_data.stdout) # Show output from script
+                    st.success("Synthetic data generation complete.")
+                except subprocess.CalledProcessError as e:
+                    st.error("Synthetic data generation failed:")
+                    st.code(e.stderr)
+                    st.stop() # Stop if this fails
+                except FileNotFoundError:
+                    st.error("Error: `synthetic_data_factory.py` not found. Skipping.")
+                    st.stop() # Stop if this fails
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+                    st.stop() # Stop if this fails
+
+            # --- 3. Retrain Model ---
+            st.write("Step 3: Retraining batch model (Stage 2)...")
+            process_2_placeholder = st.empty()
+            with st.spinner("Retraining batch model... This may take a long time."):
+                try:
+                    # Use subprocess to call the external training script
+                    process_train = subprocess.run(
+                        [sys.executable, "model_trainer.py", drifted_path], 
+                        capture_output=True, text=True, check=True, timeout=600 # Increased timeout
+                    )
+                    process_2_placeholder.text(process_train.stdout) # Show output from script
+                    st.success("Model retraining complete.")
+                except subprocess.CalledProcessError as e:
+                    st.error("Model retraining failed:")
+                    st.code(e.stderr)
+                    st.stop() # Stop if this fails
+                except FileNotFoundError:
+                    st.error("Error: `model_trainer.py` not found. Skipping.")
+                    st.stop() # Stop if this fails
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+                    st.stop() # Stop if this fails
+
+            # --- 4. Reload Artifacts ---
+            st.write("Step 4: Reloading new model artifacts...")
+            with st.spinner("Reloading new model artifacts..."):
+                st.cache_resource.clear()
+                # Re-call the load function to get new artifacts into the session
+                model, scaler, selector, reference_df, label_mapping, online_model = load_artifacts()
+                if model is None or scaler is None or selector is None:
+                    st.error("Failed to reload artifacts after retraining. Please refresh the page.")
+                    st.stop()
+                else:
+                    st.success("New model artifacts loaded successfully.")
+            
+            st.subheader("Drift Details")
             for col, p in drifted[:10]:
                 st.write(f"- {col} (p = {p:.5f})")
+            # ----- END OF NEW LOGIC -----
+            
         else:
             st.success("No significant feature drift detected.")
 
@@ -282,6 +364,7 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
 
     except Exception as e:
         st.error(f"Error during processing: {str(e)}")
+        st.exception(e) # NEW: show full traceback
 
 elif uploaded_file:
     st.warning("Model and support files were not loaded correctly. Please check their presence.")
@@ -303,3 +386,5 @@ if online_model:
         online_metrics = metrics.ClassificationReport()
         joblib.dump(online_model, ONLINE_MODEL_PATH)
         st.sidebar.success("Online model reset!")
+
+
