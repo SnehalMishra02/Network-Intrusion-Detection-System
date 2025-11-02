@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import subprocess  # <-- Added
-import sys         # <-- Added
+import sys       # <-- Added
 import joblib
 import os
 from scipy.stats import ks_2samp
@@ -16,6 +16,11 @@ from river import tree, ensemble, neighbors, naive_bayes
 import subprocess
 import sys
 import time
+
+# NEW: Imports for Confusion Matrix Plotting
+import matplotlib.pyplot as plt
+import seaborn as sns
+from io import BytesIO # <-- NEW: For plot download
 
 # NEW: Deep model predictor
 from model_dl.predict_nn import NNPredictor
@@ -30,9 +35,13 @@ SELECTOR_PATH = "./model/selector.pkl"
 REFERENCE_SAMPLE_PATH = "./reference_sample.csv"
 LABEL_MAPPING_PATH = "./model/label_mapping.pkl"
 ONLINE_MODEL_PATH = "./model/online_model.pkl"
+METRICS_PATH = "./model/model_metrics.pkl" # <-- NEW
 
 # NEW: DL artifacts directory (created by your NN trainer)
 DL_ARTIFACTS_DIR = "./artifacts"  # must contain nn.pt, scaler.pkl, nn_meta.json
+
+# --- Define the temporary file path for drifted data ---
+TEMP_DRIFTED_DATA_PATH = "temp_drifted_data.csv"
 
 # ---------------------- Loaders ----------------------
 
@@ -48,14 +57,19 @@ def load_artifacts():
             preprocessing.StandardScaler(),
             tree.HoeffdingTreeClassifier()
         )
-        return model, scaler, selector, reference, label_mapping, online_model
+        # --- FIX: Renamed variable to avoid namespace collision ---
+        loaded_metrics = joblib.load(METRICS_PATH) if os.path.exists(METRICS_PATH) else None
+        # --- End FIX ---
+        
+        return model, scaler, selector, reference, label_mapping, online_model, loaded_metrics
     except Exception as e:
         st.error(f"Error loading artifacts: {e}")
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None # <-- Updated to 7 Nones
 
 # NEW: cache-load the deep model
 @st.cache_resource
 def load_nn():
+# ... (rest of the function is unchanged) ...
     try:
         return NNPredictor(artifacts_dir=DL_ARTIFACTS_DIR)
     except Exception as e:
@@ -63,7 +77,10 @@ def load_nn():
         return None
 
 # Initialize Models and Metrics
-model, scaler, selector, reference_df, label_mapping, online_model = load_artifacts()
+# --- FIX: Updated to receive renamed variable ---
+model, scaler, selector, reference_df, label_mapping, online_model, loaded_metrics = load_artifacts()
+# ---
+# This now correctly refers to the 'river' import
 online_metrics = metrics.ClassificationReport()
 drift_detector = drift.ADWIN()
 inverse_map = {v: k for k, v in label_mapping.items()} if label_mapping else None
@@ -72,7 +89,9 @@ nn = load_nn()
 # ---------------------- Utils ----------------------
 
 # Drift Detection Function
+# ... (function is unchanged) ...
 def detect_drift(reference_data, incoming_data, feature_names, threshold=0.05):
+# ... (rest of the function is unchanged) ...
     drifted_features = []
     for col in feature_names:
         if col in incoming_data.columns:
@@ -82,7 +101,9 @@ def detect_drift(reference_data, incoming_data, feature_names, threshold=0.05):
     return drifted_features
 
 # Prepare Data for Online Learning
+# ... (function is unchanged) ...
 def prepare_river_sample(row, feature_names, target_col=None):
+# ... (rest of the function is unchanged) ...
     features = {col: row[col] for col in feature_names if col in row}
     if target_col and target_col in row:
         return features, row[target_col]
@@ -90,13 +111,12 @@ def prepare_river_sample(row, feature_names, target_col=None):
 
 # ---------------------- UI ----------------------
 
-# App Title and Description
+# ... (UI is unchanged) ...
 st.title("Network Intrusion Detection System")
 st.markdown("""
 Upload a CSV file of network traffic to classify entries, detect data drift, and evaluate model performance.
 This system uses a batch-trained XGBoost model, supports online learning with Hoeffding Tree, and now includes a Deep Learning (MLP) baseline.
 """)
-
 # File Upload and Input
 uploaded_file = st.file_uploader("Upload Network Traffic CSV", type=["csv"])
 ground_truth_col = st.text_input("Enter the ground truth column name (if available):")
@@ -137,9 +157,9 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             # --- 1. Save Drifted Data ---
             st.write("Step 1: Saving drifted data for analysis...")
             try:
-                drifted_path = os.path.abspath("uploaded_drifted.csv")  # dynamically named file
-                numeric_df.to_csv(drifted_path, index=False)
-                st.write(f"Saved drifted data to '{drifted_path}'")
+                # Save the cleaned numeric_df to the temp file
+                numeric_df.to_csv(TEMP_DRIFTED_DATA_PATH, index=False) 
+                st.write(f"Saved '{TEMP_DRIFTED_DATA_PATH}'.")
             except Exception as e:
                 st.error(f"Failed to save drifted data file: {e}")
                 st.stop()
@@ -149,9 +169,9 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             process_1_placeholder = st.empty()
             with st.spinner("Generating new synthetic data... This may take a moment."):
                 try:
-                    # Use subprocess to call the external script
+                    # Pass the temp data path as an argument
                     process_data = subprocess.run(
-                        [sys.executable, "synthetic_data_factory.py", drifted_path], 
+                        [sys.executable, "synthetic_data_factory.py", TEMP_DRIFTED_DATA_PATH], 
                         capture_output=True, text=True, check=True, timeout=120
                     )
                     process_1_placeholder.text(process_data.stdout) # Show output from script
@@ -172,9 +192,9 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             process_2_placeholder = st.empty()
             with st.spinner("Retraining batch model... This may take a long time."):
                 try:
-                    # Use subprocess to call the external training script
+                    # Pass the temp data path as an argument
                     process_train = subprocess.run(
-                        [sys.executable, "model_trainer.py", drifted_path], 
+                        [sys.executable, "model_trainer.py", TEMP_DRIFTED_DATA_PATH], 
                         capture_output=True, text=True, check=True, timeout=600 # Increased timeout
                     )
                     process_2_placeholder.text(process_train.stdout) # Show output from script
@@ -194,8 +214,9 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             st.write("Step 4: Reloading new model artifacts...")
             with st.spinner("Reloading new model artifacts..."):
                 st.cache_resource.clear()
-                # Re-call the load function to get new artifacts into the session
-                model, scaler, selector, reference_df, label_mapping, online_model = load_artifacts()
+                # --- FIX: UPDATED to load renamed variable ---
+                model, scaler, selector, reference_df, label_mapping, online_model, loaded_metrics = load_artifacts()
+                # ---
                 if model is None or scaler is None or selector is None:
                     st.error("Failed to reload artifacts after retraining. Please refresh the page.")
                     st.stop()
@@ -322,6 +343,9 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
             online_predictions_series = pd.Series(online_predictions).astype(int)
 
             st.subheader("4. Model Performance")
+            
+            plot_accuracies = {} # <-- NEW: To store accuracies for plotting
+            
             if nn_pred_numeric is not None:
                 col1, col2, col3, col4 = st.columns(4)
             else:
@@ -329,6 +353,9 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
 
             batch_acc = accuracy_score(true_labels, batch_predictions_series)
             online_acc = (online_correct / total_samples) if total_samples > 0 else 0.0
+            
+            plot_accuracies["Batch (XGB)"] = batch_acc
+            plot_accuracies["Online (River)"] = online_acc
 
             with col1:
                 st.metric("Batch Model Accuracy", f"{batch_acc * 100:.2f}%", help="XGBoost on selected+scaled features")
@@ -337,6 +364,7 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
 
             if nn_pred_numeric is not None:
                 nn_acc = accuracy_score(true_labels, pd.Series(nn_pred_numeric).astype(int))
+                plot_accuracies["Deep (MLP)"] = nn_acc # <-- NEW
                 with col3:
                     st.metric("Deep (MLP) Accuracy", f"{nn_acc * 100:.2f}%")
 
@@ -346,6 +374,7 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
                     (pd.Series(nn_pred_numeric).astype(int) == true_labels)
                 ).sum()
                 hybrid_acc = hybrid_correct / len(true_labels)
+                plot_accuracies["Hybrid (Any)"] = hybrid_acc # <-- NEW
                 with col4:
                     st.metric("Hybrid Accuracy", f"{hybrid_acc * 100:.2f}%")
             else:
@@ -354,13 +383,79 @@ if uploaded_file and model and scaler and selector and reference_df is not None:
                     (online_predictions_series == true_labels)
                 ).sum()
                 hybrid_acc = hybrid_correct / len(true_labels)
+                plot_accuracies["Hybrid (Any)"] = hybrid_acc # <-- NEW
                 with col4:
                     st.metric("Hybrid Accuracy", f"{hybrid_acc * 100:.2f}%")
+
+            # --- START: NEW PLOTTING LOGIC FOR A.2 ---
+            st.subheader("Figure A.2: Comparative Model Accuracy")
+            
+            try:
+                # Create DataFrame for plotting
+                df_acc = pd.DataFrame(plot_accuracies.items(), columns=["Model", "Accuracy"])
+                
+                # Create the plot
+                fig, ax = plt.subplots(figsize=(10, 6))
+                sns.barplot(x="Model", y="Accuracy", data=df_acc, ax=ax, palette="Blues")
+                ax.set_title("Comparative Model Accuracy Plot")
+                ax.set_ylabel("Accuracy")
+                ax.set_xlabel("Model Type")
+                ax.set_ylim(0, 1.05) # Set y-axis from 0 to 105%
+                
+                # Add accuracy labels on top of bars
+                for p in ax.patches:
+                    ax.annotate(f"{p.get_height() * 100:.2f}%", 
+                                (p.get_x() + p.get_width() / 2., p.get_height()), 
+                                ha='center', va='center', 
+                                xytext=(0, 9), 
+                                textcoords='offset points')
+                
+                st.pyplot(fig)
+                
+                # Add download button for the plot
+                plot_buf = BytesIO()
+                fig.savefig(plot_buf, format='png', bbox_inches='tight')
+                plt.close(fig) # Close the figure to save memory
+                
+                st.download_button(
+                    label="Download Accuracy Plot (A.2)",
+                    data=plot_buf.getvalue(),
+                    file_name="A2_accuracy_plot.png",
+                    mime="image/png"
+                )
+                
+            except Exception as e:
+                st.error(f"Could not generate accuracy plot: {e}")
+            # --- END: NEW PLOTTING LOGIC FOR A.2 ---
+
 
         # Download Results
         st.subheader("6. Download Results")
         csv = df_result.to_csv(index=False).encode("utf-8")
         st.download_button("Download Prediction CSV", csv, file_name="predictions.csv", mime="text/csv")
+
+        # --- 7. NEW: DISPLAY CONFUSION MATRIX ---
+        st.subheader("7. Retrained Model Confusion Matrix")
+        # --- FIX: Use renamed 'loaded_metrics' variable ---
+        if loaded_metrics and "confusion_matrix" in loaded_metrics:
+            cm = loaded_metrics["confusion_matrix"]
+            
+            # Use "auto" for labels as the re-encoded labels might not match
+            # the original label_mapping. This is the safest approach.
+            labels = "auto" 
+            
+            fig, ax = plt.subplots(figsize=(10, 8))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax, 
+                        xticklabels=labels, yticklabels=labels)
+            ax.set_xlabel('Predicted Label')
+            ax.set_ylabel('True Label')
+            ax.set_title('Confusion Matrix for Retrained Batch Model')
+            st.pyplot(fig)
+            plt.close(fig) # Close the figure to save memory
+            
+        else:
+            st.info("Confusion Matrix is not yet available. It will be generated and displayed here after the first automated retraining cycle.")
+        # --- END NEW ---
 
     except Exception as e:
         st.error(f"Error during processing: {str(e)}")
@@ -386,5 +481,4 @@ if online_model:
         online_metrics = metrics.ClassificationReport()
         joblib.dump(online_model, ONLINE_MODEL_PATH)
         st.sidebar.success("Online model reset!")
-
 
